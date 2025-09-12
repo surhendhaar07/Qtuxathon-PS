@@ -1,0 +1,451 @@
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Password Checker &amp; Report Genetator</title>
+  <style>
+    :root{--bg-start:#f9fafb;--bg-end:#e5e7eb;--card:#ffffff;--accent:#0ea5a4;--muted:#475569;--good:#16a34a;--bad:#dc2626;--border:#e6eef8}
+    *{box-sizing:border-box}
+    body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;background:linear-gradient(180deg,var(--bg-start) 0%, var(--bg-end) 100%);color:#0f172a;margin:0;padding:28px}
+    .container{max-width:1100px;margin:0 auto}
+    .card{background:var(--card);padding:22px;border-radius:12px;box-shadow:0 6px 20px rgba(15,23,42,0.06);border:1px solid rgba(2,6,23,0.04)}
+    h1{margin:0 0 8px;font-size:20px}
+    p.lead{margin:0 0 18px;color:var(--muted)}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    input[type=text], input[type=file], select, textarea{flex:1;padding:12px 14px;border-radius:10px;border:1px solid rgba(2,6,23,0.06);background:transparent;color:inherit}
+    button{background:var(--accent);color:#fff;padding:10px 14px;border-radius:10px;border:none;cursor:pointer;font-weight:600}
+    button.secondary{background:transparent;border:1px solid rgba(2,6,23,0.06);color:var(--muted)}
+    pre{background:#f1f5f9;padding:12px;border-radius:8px;overflow:auto;color:var(--muted)}
+    .result{margin-top:14px;padding:14px;border-radius:10px}
+    .found{background:linear-gradient(90deg, rgba(220, 38, 38, 0.444), rgba(220, 38, 38, 0.46));border:1px solid rgba(220, 38, 38, 0.433);color:var(--bad)}
+    .notfound{background:linear-gradient(90deg, rgba(16, 163, 75, 0.421), rgba(16, 163, 75, 0.382));border:1px solid rgba(16, 163, 75, 0.475);color:var(--good)}
+    .muted{color:var(--muted);font-size:13px}
+    footer{margin-top:18px;color:var(--muted);font-size:13px}
+    .small{font-size:13px}
+    table{width:100%;border-collapse:collapse;margin-top:12px;background:transparent}
+    td,th{border:1px solid rgba(2,6,23,0.06);padding:6px;text-align:left;font-size:13px}
+    tr.found-row{background: rgba(220, 38, 38, 0.704)}
+    tr.notfound-row{background: rgba(16, 163, 75, 0.659)}
+    .toolbar{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+    .report-area{margin-top:14px;padding:14px;border-radius:10px;background:#fcfcfd;border:1px solid rgba(2,6,23,0.04)}
+    .badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef2ff;color:#3730a3;font-weight:600;font-size:12px}
+    .indicators{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
+    .chip{background:#f8fafc;padding:6px 10px;border-radius:999px;border:1px solid rgba(2,6,23,0.04);font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Password Checker and Report Generator</h1>
+      <p class="lead">Enter a value or upload a CSV file (<strong>username,password</strong>). The browser computes <strong>SHA-1</strong>, sends only the <strong>first 5 hex chars</strong> to <code>https://api.pwnedpasswords.com/range/</code>, and checks locally. After a run you can generate a detailed report (JSON/HTML) containing indicators and recommendations.</p>
+
+      <div class="row" style="margin-bottom:12px">
+        <input id="valueInput" type="text" placeholder="Type or paste a password / value here" aria-label="value input">
+        <button id="checkBtn">Check</button>
+        <button id="clearBtn" class="secondary">Clear</button>
+      </div>
+
+      <div class="row" style="margin-bottom:12px">
+        <input id="csvFile" type="file" accept=".csv" aria-label="CSV file input">
+        <button id="checkCsvBtn">Check CSV</button>
+      </div>
+
+      <div class="toolbar">
+        <div id="status" class="muted">Ready</div>
+        <div style="flex:1"></div>
+        <button id="generateReportBtn" class="secondary">Generate Report</button>
+        <button id="downloadJsonBtn" class="secondary" style="display:none">Download JSON</button>
+        <button id="downloadHtmlBtn" class="secondary" style="display:none">Download HTML Report</button>
+      </div>
+
+    <div id="strengthMeter"></div>
+    <div id="suggestionBox" class="suggestions"></div>
+
+    <div id="resultArea"></div>
+  </div>
+
+      <div id="resultArea"></div>
+
+      <div id="reportContainer" class="report-area" style="display:none"></div>
+
+      <footer>
+        <div class="small">Privacy notes: SHA-1 computed locally (Web Crypto). Use a trusted password manager and change passwords immediately if they appear in breaches.</div>
+      </footer>
+    </div>
+  
+
+  <script>
+    // --- Utilities ---
+    function bufferToHex(buffer){
+      const bytes = new Uint8Array(buffer);
+      let hex = '';
+      for(const b of bytes) hex += b.toString(16).padStart(2,'0');
+      return hex.toUpperCase();
+    }
+
+    async function sha1Hex(str){
+      const enc = new TextEncoder();
+      const data = enc.encode(str);
+      const hash = await crypto.subtle.digest('SHA-1', data);
+      return bufferToHex(hash);
+    }
+
+    function escapeHtml(s){ if(!s && s!==0) return ''; return String(s).replace(/[&<>"]+/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]||c); }
+
+    // basic indicator extraction regexes
+    const RE_EMAIL = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+    const RE_IP = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+    const RE_DOMAIN = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/gi;
+
+    // DOM
+    const input = document.getElementById('valueInput');
+    const btn = document.getElementById('checkBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const status = document.getElementById('status');
+    const area = document.getElementById('resultArea');
+    const csvBtn = document.getElementById('checkCsvBtn');
+    const csvFileInput = document.getElementById('csvFile');
+    const generateReportBtn = document.getElementById('generateReportBtn');
+    const reportContainer = document.getElementById('reportContainer');
+    const downloadJsonBtn = document.getElementById('downloadJsonBtn');
+    const downloadHtmlBtn = document.getElementById('downloadHtmlBtn');
+
+    // findings storage
+    const findings = {
+      header: {},
+      summary: '',
+      sources: new Set(),
+      indicators: {emails: new Set(), ips: new Set(), domains: new Set(), hashes: new Set()},
+      threatActors: [],
+      riskImpact: '',
+      timeline: {firstSeen: null, lastSeen: null},
+      evidence: [],
+      recommendations: []
+    };
+
+    function setStatus(t){ status.textContent = t; }
+
+    // fetch range API and check suffix
+    async function fetchRange(prefix){
+      const url = 'https://api.pwnedpasswords.com/range/' + prefix;
+      const res = await fetch(url, {cache: 'no-cache'});
+      if(!res.ok) throw new Error('HIBP API error: ' + res.status);
+      const txt = await res.text();
+      return txt.split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{
+        const [s,c] = l.split(':');
+        return {suffix: s.toUpperCase(), count: parseInt(c||'0',10)};
+      });
+    }
+
+    async function checkHash(value){
+      const hash = await sha1Hex(value);
+      const prefix = hash.slice(0,5);
+      const suffix = hash.slice(5);
+      const rows = await fetchRange(prefix);
+      const match = rows.find(r => r.suffix === suffix);
+      return {hash,foundCount: match? match.count : 0, prefix};
+    }
+
+    // indicator extraction from arbitrary text
+    function extractIndicators(text){
+      if(!text) return;
+      const emails = text.match(RE_EMAIL) || [];
+      const ips = text.match(RE_IP) || [];
+      const domains = (text.match(RE_DOMAIN) || []).filter(d=> !d.match(/^\d+\./)); // drop IP-like
+      emails.forEach(e=>findings.indicators.emails.add(e.toLowerCase()));
+      ips.forEach(i=>findings.indicators.ips.add(i));
+      domains.forEach(d=>findings.indicators.domains.add(d.toLowerCase()));
+    }
+
+    // --- Rendering helpers ---
+    function renderSingleResult(value,result){
+      const div = document.createElement('div');
+      div.className = 'result ' + (result.foundCount? 'found':'notfound');
+      if(result.foundCount){
+        div.innerHTML = `<strong>${escapeHtml(value)}</strong> — <span style="color:var(--bad);font-weight:700">Found</span> (${result.foundCount.toLocaleString()} times)`;
+      } else {
+        div.innerHTML = `<strong>${escapeHtml(value)}</strong> — <span style="color:var(--good);font-weight:700">Not found</span>`;
+      }
+      const debug = document.createElement('pre');
+      debug.textContent = `SHA-1: ${result.hash}\nAPI prefix: ${result.prefix}`;
+      div.appendChild(debug);
+      area.appendChild(div);
+    }
+
+    // --- Single value check ---
+    btn.addEventListener('click', async ()=>{
+      const val = input.value.trim();
+      area.innerHTML = '';
+      if(!val){ setStatus('Please enter a value to check.'); return; }
+      setStatus('Computing SHA-1 and querying HIBP...');
+      try{
+        extractIndicators(val);
+        const res = await checkHash(val);
+        renderSingleResult(val,res);
+        findings.indicators.hashes.add(res.hash);
+        findings.sources.add('https://api.pwnedpasswords.com');
+        findings.timeline.firstSeen = findings.timeline.firstSeen || new Date().toISOString();
+        findings.timeline.lastSeen = new Date().toISOString();
+        setStatus('Done');
+      } catch(err){
+        setStatus('Error: ' + err.message);
+        area.innerHTML = `<div class="result found"><strong>Error:</strong> ${escapeHtml(err.message)}</div>`;
+      }
+    });
+
+    clearBtn.addEventListener('click', ()=>{
+      input.value = '';
+      area.innerHTML = '';
+      reportContainer.style.display = 'none';
+      downloadJsonBtn.style.display = 'none';
+      downloadHtmlBtn.style.display = 'none';
+      // reset findings
+      findings.sources = new Set();
+      findings.indicators = {emails: new Set(), ips: new Set(), domains: new Set(), hashes: new Set()};
+      findings.threatActors = [];
+      findings.evidence = [];
+      findings.recommendations = [];
+      findings.timeline = {firstSeen: null, lastSeen: null};
+      setStatus('Ready');
+    });
+
+    // --- CSV processing ---
+    csvBtn.addEventListener('click', async ()=>{
+      const file = csvFileInput.files[0];
+      if(!file){ setStatus('Please select a CSV file'); return; }
+      setStatus('Reading CSV...');
+      area.innerHTML = '';
+
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).filter(l=>l.trim());
+      if(lines.length === 0){ setStatus('CSV appears empty'); return; }
+      const headers = lines.shift().split(',').map(h=>h.trim().toLowerCase());
+      const uIdx = headers.indexOf('username');
+      const pIdx = headers.indexOf('password');
+      if(pIdx === -1){ setStatus('CSV must have a "password" column'); return; }
+
+      // prepare table
+      area.innerHTML = '<table><thead><tr><th>Username</th><th>Password</th><th>SHA-1</th><th>Status</th><th>Count</th></tr></thead><tbody></tbody></table>';
+      const tbody = area.querySelector('tbody');
+
+      // reset and set timeline
+      findings.sources.add('https://api.pwnedpasswords.com');
+      findings.timeline.firstSeen = findings.timeline.firstSeen || new Date().toISOString();
+
+      // process each row sequentially (simple rate comfort). For large files, implement batching.
+      for(const line of lines){
+        const cols = line.split(',');
+        const username = (uIdx !== -1 ? cols[uIdx] : '').trim();
+        const password = (cols[pIdx] || '').trim();
+
+        // extract indicators from username/password
+        extractIndicators(username);
+        extractIndicators(password);
+
+        // create row immediately so UI updates while awaiting
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${escapeHtml(username)}</td><td>${escapeHtml(password)}</td><td>—</td><td>Checking...</td><td>—</td>`;
+        tbody.appendChild(tr);
+
+        try{
+          const res = await checkHash(password);
+          findings.indicators.hashes.add(res.hash);
+          findings.threatActors.push({username: username || null});
+          tr.cells[2].textContent = res.hash;
+          tr.cells[3].textContent = res.foundCount? 'Found' : 'Not Found';
+          tr.cells[4].textContent = res.foundCount || 0;
+          if(res.foundCount){ tr.classList.add('found-row'); } else { tr.classList.add('notfound-row'); }
+        } catch(err){
+          tr.cells[2].textContent = 'Error';
+          tr.cells[3].textContent = err.message;
+          tr.cells[4].textContent = '-';
+          tr.classList.add('found-row');
+        }
+
+        // small throttle to be nice to API
+        await new Promise(r=>setTimeout(r, 150));
+      }
+
+      findings.timeline.lastSeen = new Date().toISOString();
+      setStatus('CSV processing complete');
+    });
+
+    // --- Report generation ---
+    function generateCaseId(){ return 'CASE-' + Math.random().toString(36).slice(2,10).toUpperCase(); }
+
+    generateReportBtn.addEventListener('click', ()=>{
+      // build header
+      findings.header = {title: 'Pwned Passwords Investigative Report', generatedAt: new Date().toISOString(), caseId: generateCaseId()};
+
+      // summary
+      const uniqueHashes = Array.from(findings.indicators.hashes);
+      findings.summary = `Found ${uniqueHashes.length} unique breached password hash${uniqueHashes.length!==1?'es':''} across ${findings.threatActors.length} accounts.`;
+
+      // sources -> array
+      const sourcesArr = Array.from(findings.sources).map(s=>({name: s, url: s}));
+
+      // indicators arrays
+      const indicators = {
+        emails: Array.from(findings.indicators.emails),
+        ips: Array.from(findings.indicators.ips),
+        domains: Array.from(findings.indicators.domains),
+        hashes: uniqueHashes
+      };
+
+      // risk heuristic
+      findings.riskImpact = indicators.hashes.length>0 ? 'Medium to High — breached credentials present; immediate remediation recommended.' : 'Low — no breached credentials detected in this dataset.';
+
+      // evidence (hash list + metadata)
+      findings.evidence = indicators.hashes.map(h=>({hash: h, source: 'HaveIBeenPwned PwnedPasswords', notedAt: new Date().toISOString()}));
+
+      // timeline ensures values exist
+      if(!findings.timeline.firstSeen) findings.timeline.firstSeen = new Date().toISOString();
+      if(!findings.timeline.lastSeen) findings.timeline.lastSeen = new Date().toISOString();
+
+      // recommendations
+      findings.recommendations = [
+        'Reset affected account passwords immediately and enforce unique, strong passwords.',
+        'Enable multi-factor authentication for all accounts.',
+        'Monitor for suspicious login activity and credential stuffing attempts.'
+      ];
+
+      const report = {
+        header: findings.header,
+        summary: findings.summary,
+        sources: sourcesArr,
+        indicators,
+        threatActors: findings.threatActors,
+        riskImpact: findings.riskImpact,
+        timeline: findings.timeline,
+        evidence: findings.evidence,
+        recommendations: findings.recommendations
+      };
+
+      renderReport(report);
+
+      // enable downloads
+      downloadJsonBtn.style.display = 'inline-block';
+      downloadHtmlBtn.style.display = 'inline-block';
+      downloadJsonBtn.onclick = ()=> downloadFile(JSON.stringify(report, null, 2), `${findings.header.caseId}.json`, 'application/json');
+      downloadHtmlBtn.onclick = ()=> downloadFile(renderReportHtml(report), `${findings.header.caseId}.html`, 'text/html');
+    });
+
+    function renderReport(report){
+      reportContainer.style.display = 'block';
+      reportContainer.innerHTML = '';
+      const headerEl = document.createElement('div');
+      headerEl.innerHTML = `<div style="display:flex;gap:12px;align-items:center"><h3 style="margin:0">${escapeHtml(report.header.title)}</h3><div class="badge">${escapeHtml(report.header.caseId)}</div></div><div class="muted" style="margin-top:6px">Generated: ${escapeHtml(report.header.generatedAt)}</div><hr/>`;
+      reportContainer.appendChild(headerEl);
+
+      const summ = document.createElement('p'); summ.textContent = report.summary; reportContainer.appendChild(summ);
+
+      const sec = (title, html)=>{ const s = document.createElement('div'); s.innerHTML = `<h4 style="margin:12px 0 6px">${title}</h4><div>${html}</div>`; reportContainer.appendChild(s); };
+
+      sec('Sources', report.sources.map(s=> `<div><strong>${escapeHtml(s.name)}</strong> — <a href="${escapeHtml(s.url)}" target="_blank">${escapeHtml(s.url)}</a></div>`).join(''));
+
+      sec('Indicators Found', `<div class="indicators"><div class="chip">Emails: ${report.indicators.emails.length}</div><div class="chip">IPs: ${report.indicators.ips.length}</div><div class="chip">Domains: ${report.indicators.domains.length}</div><div class="chip">Hashes: ${report.indicators.hashes.length}</div></div>`);
+
+      if(report.indicators.emails.length) sec('Emails', `<pre>${escapeHtml(report.indicators.emails.join('\n'))}</pre>`);
+      if(report.indicators.ips.length) sec('IPs', `<pre>${escapeHtml(report.indicators.ips.join('\n'))}</pre>`);
+      if(report.indicators.domains.length) sec('Domains', `<pre>${escapeHtml(report.indicators.domains.join('\n'))}</pre>`);
+
+      sec('Threat Actors', report.threatActors.length? report.threatActors.map(t=>`<div>Username: <strong>${escapeHtml(t.username||'')}</strong></div>`).join('') : '<div class="muted">None captured</div>');
+
+      sec('Risk / Impact', `<div>${escapeHtml(report.riskImpact)}</div>`);
+
+      sec('Timeline', `<div>First Seen: ${escapeHtml(report.timeline.firstSeen)}<br/>Last Seen: ${escapeHtml(report.timeline.lastSeen)}</div>`);
+
+      sec('Evidence (hashes)', `<pre>${escapeHtml(report.evidence.map(e=>e.hash).join('\n'))}</pre>`);
+
+      sec('Recommendations', `<ol>${report.recommendations.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ol>`);
+    }
+
+    function renderReportHtml(report){
+      return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(report.header.title)} - ${escapeHtml(report.header.caseId)}</title><style>body{font-family:Arial,Helvetica,sans-serif;padding:20px;color:#0f172a}pre{background:#f3f4f6;padding:12px;border-radius:6px}</style></head><body><h1>${escapeHtml(report.header.title)}</h1><p><strong>Case ID:</strong> ${escapeHtml(report.header.caseId)}<br/><strong>Generated:</strong> ${escapeHtml(report.header.generatedAt)}</p><h2>Summary</h2><p>${escapeHtml(report.summary)}</p><h2>Indicators</h2><pre>${escapeHtml(report.indicators.hashes.join('\n'))}</pre><h2>Recommendations</h2><ol>${report.recommendations.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ol><footer><small>Report generated by Pwned Passwords k-anonymity demo</small></footer></body></html>`;
+    }
+
+    function downloadFile(content, filename, mime){
+      const blob = new Blob([content], {type: mime});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    }
+    // ---------------- Password Strength ----------------
+function checkStrength(password){
+  let score = 0;
+  if(password.length >= 8) score++;
+  if(/[A-Z]/.test(password)) score++;
+  if(/[a-z]/.test(password)) score++;
+  if(/[0-9]/.test(password)) score++;
+  if(/[^A-Za-z0-9]/.test(password)) score++;
+  if(password.length >= 12) score++;
+
+  let level = "Weak", color = "#dc2626", width = "20%";
+  if(score >= 2){ level = "Medium"; color = "#f59e0b"; width="40%"; }
+  if(score >= 4){ level = "Strong"; color = "#16a34a"; width="70%"; }
+  if(score >= 6){ level = "Very Strong"; color = "#0ea5a4"; width="100%"; }
+
+  return {level,color,width};
+}
+
+function renderStrength(password){
+  const meter = document.getElementById('strengthMeter');
+  if(!password){ meter.innerHTML = ""; return; }
+  const s = checkStrength(password);
+  meter.innerHTML = `<div class="strength">Strength: <span style="color:${s.color}">${s.level}</span></div>
+    <div class="bar"><div class="bar-fill" style="width:${s.width};background:${s.color}"></div></div>`;
+
+  // if weak, show suggestions
+  renderSuggestions(password, s.level);
+}
+
+// ---------------- Suggestions ----------------
+function generateRandomPassword(len=12){
+  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()";
+  let pass = "";
+  for(let i=0;i<len;i++) pass += chars.charAt(Math.floor(Math.random()*chars.length));
+  return pass;
+}
+
+function renderSuggestions(password, level){
+  const box = document.getElementById('suggestionBox');
+  box.innerHTML = "";
+  if(level === "Weak" || level === "Medium"){
+    box.innerHTML = "<strong>Suggestions:</strong><br/>" +
+      "• Use at least 12 characters<br/>"+
+      "• Mix uppercase, lowercase, numbers & symbols<br/>"+
+      "• Avoid common words & names<br/>"+
+      "<div style='margin-top:6px'><em>Here are some strong passwords:</em></div>";
+
+    for(let i=0;i<3;i++){
+      const p = generateRandomPassword(14);
+      const span = document.createElement('div');
+      span.className = "suggestion-pass";
+      span.textContent = p;
+      span.onclick = ()=>{navigator.clipboard.writeText(p); alert("Copied to clipboard!");};
+      box.appendChild(span);
+    }
+  }
+}
+ function generateSuggestions(pw) {
+      const suggestions = [];
+      if (!pw) return suggestions;
+
+      if (pw.length < 12) suggestions.push(pw + Math.floor(Math.random() * 1000));
+      if (!/[^A-Za-z0-9]/.test(pw)) suggestions.push(pw + "@" + Math.floor(Math.random() * 99));
+      if (!/[A-Z]/.test(pw)) suggestions.push(pw.charAt(0).toUpperCase() + pw.slice(1) + "!");
+
+      // strong random suggestion
+      const strong = (Math.random().toString(36).slice(2, 12) + "@" + Math.floor(Math.random() * 999));
+      suggestions.push(strong);
+
+      // return unique suggestions
+      return Array.from(new Set(suggestions)).slice(0,4);
+    }
+
+// ---------------- Event Listeners ----------------
+//const input = document.getElementById('valueInput');
+input.addEventListener('input', e=> renderStrength(e.target.value));
+
+  </script>
+</body>
+</html>
