@@ -30,16 +30,20 @@
     .badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef2ff;color:#3730a3;font-weight:600;font-size:12px}
     .indicators{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
     .chip{background:#f8fafc;padding:6px 10px;border-radius:999px;border:1px solid rgba(2,6,23,0.04);font-size:13px}
+    .suggestion-item{display:flex;justify-content:space-between;align-items:center;width:100%;}
+    .suggestion-pass{margin-bottom:10px;padding:10px 15px;border:1px solid #ddd;border-radius:8px;background:#fff;}
+    .copy-btn{background:#0ea5a4;color:white;border:none;padding:8px 18px;border-radius:8px;cursor:pointer;font-weight:600;min-width:80px;}
+    .copy-btn:hover{background:#0b8b8a;}
   </style>
 </head>
 <body>
   <div class="container">
     <div class="card">
       <h1>Password Checker and Report Generator</h1>
-      <p class="lead">Enter a value or upload a CSV file (<strong>username,password</strong>). The browser computes <strong>SHA-1</strong>, sends only the <strong>first 5 hex chars</strong> to <code>https://api.pwnedpasswords.com/range/</code>, and checks locally. After a run you can generate a detailed report (JSON/HTML) containing indicators and recommendations.</p>
+      <p class="lead">Enter your password or upload a CSV file (<strong>username,password</strong>). The browser computes <strong>SHA-1</strong>, sends only the <strong>first 5 hex chars</strong> to <code>https://api.pwnedpasswords.com/range/</code>, and checks locally. After a run you can generate a detailed report (JSON/HTML) containing indicators and recommendations.</p>
 
       <div class="row" style="margin-bottom:12px">
-        <input id="valueInput" type="text" placeholder="Type or paste a password / value here" aria-label="value input">
+        <input id="valueInput" type="text" placeholder="Type or paste your password here" aria-label="value input">
         <button id="checkBtn">Check</button>
         <button id="clearBtn" class="secondary">Clear</button>
       </div>
@@ -236,6 +240,8 @@
         const cols = line.split(',');
         const username = (uIdx !== -1 ? cols[uIdx] : '').trim();
         const password = (cols[pIdx] || '').trim();
+        const strength = checkStrength(password);
+        const suggestions = generateSuggestions(password);
 
         // extract indicators from username/password
         extractIndicators(username);
@@ -243,7 +249,13 @@
 
         // create row immediately so UI updates while awaiting
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${escapeHtml(username)}</td><td>${escapeHtml(password)}</td><td>—</td><td>Checking...</td><td>—</td>`;
+        tr.innerHTML = `
+            <td>${username}</td>
+            <td>${password}</td>
+            <td>Checking...</td>
+            <td>${strength.level}</td>
+            <td>${suggestions.join("<br>")}</td>
+            `;
         tbody.appendChild(tr);
 
         try{
@@ -399,51 +411,62 @@ function renderStrength(password){
 }
 
 // ---------------- Suggestions ----------------
-function generateRandomPassword(len=12){
-  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()";
-  let pass = "";
-  for(let i=0;i<len;i++) pass += chars.charAt(Math.floor(Math.random()*chars.length));
-  return pass;
+function generateSuggestions(password){
+    if(!password) return [];
+    // remove spaces
+    password = password.trim();
+    // remove special chars for creating variants
+    const base = password.replace(/[^A-Za-z0-9]/g,'');
+    const suggestions = [];
+    suggestions.push(base + "@2025");
+    suggestions.push(base + "#Secure");
+    suggestions.push(base.charAt(0).toUpperCase() + base.slice(1) + "!");
+    suggestions.push(base + "_Qtux@123");
+    suggestions.push(base + "$" + Math.floor(Math.random()*999));
+    suggestions.push(base + "@Strong99");
+    suggestions.push(base + "_Cyber#2025");
+    return [...new Set(suggestions)].slice(0,5);
 }
 
 function renderSuggestions(password, level){
-  const box = document.getElementById('suggestionBox');
-  box.innerHTML = "";
-  if(level === "Weak" || level === "Medium"){
-    box.innerHTML = "<strong>Suggestions:</strong><br/>" +
-      "• Use at least 12 characters<br/>"+
-      "• Mix uppercase, lowercase, numbers & symbols<br/>"+
-      "• Avoid common words & names<br/>"+
-      "<div style='margin-top:6px'><em>Here are some strong passwords:</em></div>";
-
-    for(let i=0;i<3;i++){
-      const p = generateRandomPassword(14);
-      const span = document.createElement('div');
-      span.className = "suggestion-pass";
-      span.textContent = p;
-      span.onclick = ()=>{navigator.clipboard.writeText(p); alert("Copied to clipboard!");};
-      box.appendChild(span);
+    const box = document.getElementById("suggestionBox");
+    box.innerHTML = "";
+    if(level=="Strong" || level=="Very Strong"){
+        return;
     }
-  }
+    const suggestions = generateSuggestions(password);
+    box.innerHTML = `
+        <strong>Suggested Strong Passwords</strong><br><br>
+    `;
+    suggestions.forEach(p=>{
+        const div = document.createElement("div");
+        div.className="suggestion-pass";
+        div.style.cursor="pointer";
+        div.style.marginBottom="6px";
+        div.style.padding="8px";
+        div.style.border="1px solid #ddd";
+        div.style.borderRadius="6px";
+        div.innerHTML = `
+            <div class="suggestion-item">
+                <span>${p}</span>
+                <button class="copy-btn">Copy</button>
+            </div>
+            `;
+        const btn = div.querySelector(".copy-btn");
+        btn.addEventListener("click",(e)=>{
+            e.stopPropagation();
+            navigator.clipboard.writeText(p);
+            btn.textContent = "Copied!";
+            setTimeout(()=>{
+                btn.textContent = "Copy";
+            },1500);
+        });
+        box.appendChild(div);
+    });
 }
- function generateSuggestions(pw) {
-      const suggestions = [];
-      if (!pw) return suggestions;
-
-      if (pw.length < 12) suggestions.push(pw + Math.floor(Math.random() * 1000));
-      if (!/[^A-Za-z0-9]/.test(pw)) suggestions.push(pw + "@" + Math.floor(Math.random() * 99));
-      if (!/[A-Z]/.test(pw)) suggestions.push(pw.charAt(0).toUpperCase() + pw.slice(1) + "!");
-
-      // strong random suggestion
-      const strong = (Math.random().toString(36).slice(2, 12) + "@" + Math.floor(Math.random() * 999));
-      suggestions.push(strong);
-
-      // return unique suggestions
-      return Array.from(new Set(suggestions)).slice(0,4);
-    }
 
 // ---------------- Event Listeners ----------------
-//const input = document.getElementById('valueInput');
+// const input = document.getElementById('valueInput');
 input.addEventListener('input', e=> renderStrength(e.target.value));
 
   </script>
